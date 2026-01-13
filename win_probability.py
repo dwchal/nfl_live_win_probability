@@ -124,8 +124,230 @@ class NFLWinProbability:
 
         return max(0.0, min(1.0, probability))
 
+    def calculate_win_probability_explained(
+        self,
+        score_diff: int,
+        time_remaining: int,
+        has_possession: bool = False,
+        field_position: Optional[int] = None,
+        down: Optional[int] = None,
+        distance: Optional[int] = None,
+        team_timeouts: Optional[int] = None,
+        opponent_timeouts: Optional[int] = None,
+        team_win_pct: Optional[float] = None,
+        opponent_win_pct: Optional[float] = None
+    ) -> dict:
+        """
+        Calculate win probability with detailed explanation of all factors.
+
+        Returns a dictionary containing:
+        - probability: The final win probability (0.0-1.0)
+        - factors: Dictionary of each factor's contribution to the z-score
+        - z_total: The total z-score before logistic transformation
+        - explanation: Human-readable explanation of the prediction
+
+        Args:
+            (same as calculate_win_probability)
+
+        Returns:
+            Dictionary with probability and detailed breakdown
+        """
+        factors = {}
+        z = 0.0
+
+        # Calculate base probability from score and time
+        score_contribution = score_diff * self.score_weight
+        factors['score_diff'] = {
+            'value': score_diff,
+            'weight': self.score_weight,
+            'contribution': score_contribution,
+            'description': f"{'+' if score_diff >= 0 else ''}{score_diff} points"
+        }
+        z += score_contribution
+
+        time_contribution = time_remaining * self.time_weight
+        factors['time_remaining'] = {
+            'value': time_remaining,
+            'weight': self.time_weight,
+            'contribution': time_contribution,
+            'description': self._format_time(time_remaining)
+        }
+        z += time_contribution
+
+        # Add possession bonus
+        possession_contribution = self.possession_bonus if has_possession else 0.0
+        factors['possession'] = {
+            'value': has_possession,
+            'weight': self.possession_bonus,
+            'contribution': possession_contribution,
+            'description': 'Has ball' if has_possession else 'Opponent has ball'
+        }
+        z += possession_contribution
+
+        # Add field position factor
+        if field_position is not None:
+            fp_contribution = (field_position - 50) * self.field_position_weight
+            factors['field_position'] = {
+                'value': field_position,
+                'weight': self.field_position_weight,
+                'contribution': fp_contribution,
+                'description': self._describe_field_position(field_position)
+            }
+            z += fp_contribution
+        else:
+            factors['field_position'] = {
+                'value': None,
+                'weight': self.field_position_weight,
+                'contribution': 0.0,
+                'description': 'Unknown'
+            }
+
+        # Add down and distance factors
+        if has_possession and down is not None:
+            down_contribution = self.down_distance_weights.get(down, 0)
+            distance_penalty = 0.0
+
+            if distance is not None:
+                distance_penalty = distance * self.distance_weight
+                if down >= 3 and distance >= 7:
+                    distance_penalty *= 1.5
+
+            factors['down_distance'] = {
+                'value': (down, distance),
+                'down_weight': self.down_distance_weights.get(down, 0),
+                'distance_weight': self.distance_weight,
+                'contribution': down_contribution + distance_penalty,
+                'description': f"{self._ordinal(down)} & {distance if distance else '?'}"
+            }
+            z += down_contribution + distance_penalty
+        else:
+            factors['down_distance'] = {
+                'value': None,
+                'contribution': 0.0,
+                'description': 'N/A (no possession)'
+            }
+
+        # Add timeout differential factor
+        if team_timeouts is not None and opponent_timeouts is not None:
+            timeout_diff = team_timeouts - opponent_timeouts
+            if time_remaining < 300:  # Last 5 minutes
+                timeout_value = self.timeout_weight * 1.5
+                timeout_desc = f"{team_timeouts} vs {opponent_timeouts} (late game bonus)"
+            else:
+                timeout_value = self.timeout_weight
+                timeout_desc = f"{team_timeouts} vs {opponent_timeouts}"
+
+            timeout_contribution = timeout_diff * timeout_value
+            factors['timeouts'] = {
+                'value': (team_timeouts, opponent_timeouts),
+                'weight': timeout_value,
+                'contribution': timeout_contribution,
+                'description': timeout_desc
+            }
+            z += timeout_contribution
+        else:
+            factors['timeouts'] = {
+                'value': None,
+                'contribution': 0.0,
+                'description': 'Unknown'
+            }
+
+        # Add team strength rating factor
+        if team_win_pct is not None and opponent_win_pct is not None:
+            strength_diff = team_win_pct - opponent_win_pct
+            strength_contribution = strength_diff * self.team_strength_weight
+            factors['team_strength'] = {
+                'value': (team_win_pct, opponent_win_pct),
+                'weight': self.team_strength_weight,
+                'contribution': strength_contribution,
+                'description': f"{team_win_pct:.1%} vs {opponent_win_pct:.1%}"
+            }
+            z += strength_contribution
+        else:
+            factors['team_strength'] = {
+                'value': None,
+                'contribution': 0.0,
+                'description': 'Unknown'
+            }
+
+        # Convert to probability using logistic function
+        probability = self._logistic(z)
+        probability = max(0.0, min(1.0, probability))
+
+        # Generate human-readable explanation
+        explanation = self._generate_explanation(factors, z, probability)
+
+        return {
+            'probability': probability,
+            'z_total': z,
+            'factors': factors,
+            'explanation': explanation
+        }
+
+    def _format_time(self, seconds: int) -> str:
+        """Format seconds as MM:SS remaining."""
+        if seconds >= 3600:
+            mins = seconds // 60
+            return f"{mins}:{seconds % 60:02d} remaining"
+        mins = seconds // 60
+        secs = seconds % 60
+        return f"{mins}:{secs:02d} remaining"
+
+    def _describe_field_position(self, field_pos: int) -> str:
+        """Describe field position in human terms."""
+        if field_pos >= 80:
+            return f"Red zone (opp {100 - field_pos})"
+        elif field_pos >= 50:
+            return f"Opponent territory ({100 - field_pos} yard line)"
+        elif field_pos <= 20:
+            return f"Own territory (own {field_pos})"
+        else:
+            return f"Own territory ({field_pos} yard line)"
+
+    def _ordinal(self, n: int) -> str:
+        """Convert number to ordinal (1st, 2nd, etc.)."""
+        if n == 1:
+            return "1st"
+        elif n == 2:
+            return "2nd"
+        elif n == 3:
+            return "3rd"
+        elif n == 4:
+            return "4th"
+        return f"{n}th"
+
+    def _generate_explanation(self, factors: dict, z: float, probability: float) -> str:
+        """Generate a human-readable explanation of the prediction."""
+        lines = []
+
+        # Sort factors by absolute contribution
+        sorted_factors = sorted(
+            [(k, v) for k, v in factors.items() if v.get('contribution', 0) != 0],
+            key=lambda x: abs(x[1]['contribution']),
+            reverse=True
+        )
+
+        if not sorted_factors:
+            return "Insufficient data for detailed breakdown."
+
+        # Identify the most influential factors
+        top_factors = sorted_factors[:3]
+
+        for name, factor in top_factors:
+            contrib = factor['contribution']
+            desc = factor['description']
+            direction = "+" if contrib > 0 else ""
+            lines.append(f"  {name}: {desc} ({direction}{contrib:.2f})")
+
+        return "\n".join(lines)
+
     def _logistic(self, z: float) -> float:
-        """Apply logistic function to convert value to probability."""
+        """Apply logistic function to convert value to probability.
+
+        Uses a numerically stable implementation that prevents exact 0 or 1 values.
+        """
+        # Clip z to prevent numerical overflow/underflow
+        z = np.clip(z, -20, 20)
         return 1 / (1 + np.exp(-z))
 
     def calculate_comeback_probability(

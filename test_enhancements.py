@@ -123,6 +123,39 @@ def test_synthetic_data():
         )
         print(f"  {scenario['desc']}: {prob:.1%}")
 
+    # Test explainable model
+    print("\n" + "-" * 70)
+    print("Testing Explainable Win Probability:")
+    print("-" * 70)
+
+    result = calculator.calculate_win_probability_explained(
+        score_diff=7,
+        time_remaining=300,
+        has_possession=True,
+        field_position=65,
+        down=2,
+        distance=5,
+        team_timeouts=2,
+        opponent_timeouts=1,
+        team_win_pct=0.75,
+        opponent_win_pct=0.5
+    )
+
+    print(f"  Win Probability: {result['probability']:.1%}")
+    print(f"  Z-Score: {result['z_total']:.2f}")
+    print("\n  Factor Breakdown:")
+    for name, factor in result['factors'].items():
+        contrib = factor.get('contribution', 0)
+        desc = factor.get('description', 'N/A')
+        print(f"    {name}: {desc} ({contrib:+.2f})")
+
+    # Verify result structure
+    assert 'probability' in result, "Missing probability in result"
+    assert 'z_total' in result, "Missing z_total in result"
+    assert 'factors' in result, "Missing factors in result"
+    assert 'explanation' in result, "Missing explanation in result"
+    assert 0 <= result['probability'] <= 1, "Probability out of range"
+
     print("\n✓ Synthetic testing complete!")
 
 
