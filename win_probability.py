@@ -15,14 +15,14 @@ class NFLWinProbability:
     def __init__(self):
         """Initialize the win probability calculator."""
         # Base coefficients for logistic regression model
-        self.score_weight = 0.15
-        self.time_weight = 0.008
+        # Score weight is scaled by time - this is the base weight at end of game
+        self.score_weight = 0.4
         self.possession_bonus = 0.3
-        self.field_position_weight = 0.01
+        self.field_position_weight = 0.02
 
         # Enhanced factors
         self.timeout_weight = 0.15  # Value of each timeout
-        self.team_strength_weight = 0.8  # Impact of team quality difference
+        self.team_strength_weight = 0.5  # Impact of team quality difference
 
         # Down and distance weights
         self.down_distance_weights = {
@@ -32,6 +32,9 @@ class NFLWinProbability:
             4: -0.5,  # 4th down - critical situation
         }
         self.distance_weight = -0.02  # Penalty per yard to go
+
+        # Full game duration in seconds (4 quarters * 15 minutes)
+        self.full_game_seconds = 3600
 
     def calculate_win_probability(
         self,
@@ -78,22 +81,32 @@ class NFLWinProbability:
             ...     opponent_timeouts=0
             ... )
         """
-        # Calculate base probability from score and time
-        z = (score_diff * self.score_weight) + (time_remaining * self.time_weight)
+        # Calculate time scaling factor
+        # As time decreases, score differential becomes MORE important
+        # At start of game (3600s), time_scale ~ 0.33 (score matters less)
+        # At end of game (0s), time_scale ~ 1.0 (score matters most)
+        time_scale = self._calculate_time_scale(time_remaining)
 
-        # Add possession bonus
+        # Start with z = 0 (50% baseline for tied game)
+        z = 0.0
+
+        # Score differential scaled by time
+        # A 7-point lead with 1 minute left is worth more than with 30 minutes left
+        z += score_diff * self.score_weight * time_scale
+
+        # Add possession bonus (also scaled by time - possession matters more late)
         if has_possession:
-            z += self.possession_bonus
+            z += self.possession_bonus * time_scale
 
-        # Add field position factor
+        # Add field position factor (scaled by time)
         if field_position is not None:
             # Field position bonus (closer to opponent endzone = better)
-            z += (field_position - 50) * self.field_position_weight
+            z += (field_position - 50) * self.field_position_weight * time_scale
 
         # Add down and distance factors
         if has_possession and down is not None:
             # Down situation impact
-            z += self.down_distance_weights.get(down, 0)
+            z += self.down_distance_weights.get(down, 0) * time_scale
 
             # Distance to go impact (longer distance = worse)
             if distance is not None:
@@ -102,19 +115,19 @@ class NFLWinProbability:
                 # Extra penalty for 3rd/4th down with long distance
                 if down >= 3 and distance >= 7:
                     distance_penalty *= 1.5
-                z += distance_penalty
+                z += distance_penalty * time_scale
 
         # Add timeout differential factor
         if team_timeouts is not None and opponent_timeouts is not None:
             timeout_diff = team_timeouts - opponent_timeouts
             # Timeouts are more valuable late in the game
             if time_remaining < 300:  # Last 5 minutes
-                timeout_value = self.timeout_weight * 1.5
+                timeout_value = self.timeout_weight * 2.0
             else:
                 timeout_value = self.timeout_weight
-            z += timeout_diff * timeout_value
+            z += timeout_diff * timeout_value * time_scale
 
-        # Add team strength rating factor
+        # Add team strength rating factor (not scaled by time - represents base ability)
         if team_win_pct is not None and opponent_win_pct is not None:
             strength_diff = team_win_pct - opponent_win_pct
             z += strength_diff * self.team_strength_weight
@@ -123,6 +136,24 @@ class NFLWinProbability:
         probability = self._logistic(z)
 
         return max(0.0, min(1.0, probability))
+
+    def _calculate_time_scale(self, time_remaining: int) -> float:
+        """
+        Calculate time scaling factor for win probability.
+
+        As time decreases, the current game state becomes more predictive.
+        Returns a value between ~0.33 (start of game) and 1.0 (end of game).
+        """
+        # Fraction of game remaining (0.0 = game over, 1.0 = just started)
+        fraction_remaining = min(time_remaining / self.full_game_seconds, 1.0)
+
+        # Use square root to make the scaling non-linear
+        # Early game: small changes in time don't affect certainty much
+        # Late game: small changes in time matter a lot
+        # Scale ranges from 0.33 (full game left) to 1.0 (no time left)
+        time_scale = 1.0 / (1.0 + 2.0 * np.sqrt(fraction_remaining))
+
+        return time_scale
 
     def calculate_win_probability_explained(
         self,
@@ -155,41 +186,43 @@ class NFLWinProbability:
         factors = {}
         z = 0.0
 
-        # Calculate base probability from score and time
-        score_contribution = score_diff * self.score_weight
+        # Calculate time scaling factor
+        time_scale = self._calculate_time_scale(time_remaining)
+
+        # Time scale factor (shown for transparency)
+        factors['time_scale'] = {
+            'value': time_remaining,
+            'weight': time_scale,
+            'contribution': 0.0,  # Not a direct contributor, but a multiplier
+            'description': f"{self._format_time(time_remaining)} (certainty: {time_scale:.0%})"
+        }
+
+        # Score differential scaled by time
+        score_contribution = score_diff * self.score_weight * time_scale
         factors['score_diff'] = {
             'value': score_diff,
-            'weight': self.score_weight,
+            'weight': self.score_weight * time_scale,
             'contribution': score_contribution,
             'description': f"{'+' if score_diff >= 0 else ''}{score_diff} points"
         }
         z += score_contribution
 
-        time_contribution = time_remaining * self.time_weight
-        factors['time_remaining'] = {
-            'value': time_remaining,
-            'weight': self.time_weight,
-            'contribution': time_contribution,
-            'description': self._format_time(time_remaining)
-        }
-        z += time_contribution
-
-        # Add possession bonus
-        possession_contribution = self.possession_bonus if has_possession else 0.0
+        # Add possession bonus (scaled by time)
+        possession_contribution = (self.possession_bonus * time_scale) if has_possession else 0.0
         factors['possession'] = {
             'value': has_possession,
-            'weight': self.possession_bonus,
+            'weight': self.possession_bonus * time_scale,
             'contribution': possession_contribution,
             'description': 'Has ball' if has_possession else 'Opponent has ball'
         }
         z += possession_contribution
 
-        # Add field position factor
+        # Add field position factor (scaled by time)
         if field_position is not None:
-            fp_contribution = (field_position - 50) * self.field_position_weight
+            fp_contribution = (field_position - 50) * self.field_position_weight * time_scale
             factors['field_position'] = {
                 'value': field_position,
-                'weight': self.field_position_weight,
+                'weight': self.field_position_weight * time_scale,
                 'contribution': fp_contribution,
                 'description': self._describe_field_position(field_position)
             }
@@ -197,25 +230,26 @@ class NFLWinProbability:
         else:
             factors['field_position'] = {
                 'value': None,
-                'weight': self.field_position_weight,
+                'weight': self.field_position_weight * time_scale,
                 'contribution': 0.0,
                 'description': 'Unknown'
             }
 
-        # Add down and distance factors
+        # Add down and distance factors (scaled by time)
         if has_possession and down is not None:
-            down_contribution = self.down_distance_weights.get(down, 0)
+            down_contribution = self.down_distance_weights.get(down, 0) * time_scale
             distance_penalty = 0.0
 
             if distance is not None:
                 distance_penalty = distance * self.distance_weight
                 if down >= 3 and distance >= 7:
                     distance_penalty *= 1.5
+                distance_penalty *= time_scale
 
             factors['down_distance'] = {
                 'value': (down, distance),
-                'down_weight': self.down_distance_weights.get(down, 0),
-                'distance_weight': self.distance_weight,
+                'down_weight': self.down_distance_weights.get(down, 0) * time_scale,
+                'distance_weight': self.distance_weight * time_scale,
                 'contribution': down_contribution + distance_penalty,
                 'description': f"{self._ordinal(down)} & {distance if distance else '?'}"
             }
@@ -227,20 +261,20 @@ class NFLWinProbability:
                 'description': 'N/A (no possession)'
             }
 
-        # Add timeout differential factor
+        # Add timeout differential factor (scaled by time)
         if team_timeouts is not None and opponent_timeouts is not None:
             timeout_diff = team_timeouts - opponent_timeouts
             if time_remaining < 300:  # Last 5 minutes
-                timeout_value = self.timeout_weight * 1.5
+                timeout_value = self.timeout_weight * 2.0
                 timeout_desc = f"{team_timeouts} vs {opponent_timeouts} (late game bonus)"
             else:
                 timeout_value = self.timeout_weight
                 timeout_desc = f"{team_timeouts} vs {opponent_timeouts}"
 
-            timeout_contribution = timeout_diff * timeout_value
+            timeout_contribution = timeout_diff * timeout_value * time_scale
             factors['timeouts'] = {
                 'value': (team_timeouts, opponent_timeouts),
-                'weight': timeout_value,
+                'weight': timeout_value * time_scale,
                 'contribution': timeout_contribution,
                 'description': timeout_desc
             }
@@ -252,7 +286,7 @@ class NFLWinProbability:
                 'description': 'Unknown'
             }
 
-        # Add team strength rating factor
+        # Add team strength rating factor (NOT scaled by time - represents base ability)
         if team_win_pct is not None and opponent_win_pct is not None:
             strength_diff = team_win_pct - opponent_win_pct
             strength_contribution = strength_diff * self.team_strength_weight

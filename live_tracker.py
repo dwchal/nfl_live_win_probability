@@ -179,8 +179,8 @@ class LiveGameTracker:
 
         # Sort factors by absolute contribution for display
         factor_items = [
+            ('Time/Certainty', factors.get('time_scale', {})),
             ('Score', factors.get('score_diff', {})),
-            ('Time Remaining', factors.get('time_remaining', {})),
             ('Possession', factors.get('possession', {})),
             ('Field Position', factors.get('field_position', {})),
             ('Down & Distance', factors.get('down_distance', {})),
