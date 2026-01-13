@@ -310,31 +310,58 @@ class NFLGameAPI:
     def _parse_field_position(
         self,
         situation: Dict[str, Any],
-        team_abbr: str
+        team_abbr: str,
+        is_team_home: bool = True
     ) -> Optional[int]:
         """
-        Parse field position from situation data.
+        Parse field position from situation data, adjusted for team perspective.
 
         Args:
             situation: Situation dictionary from game data
-            team_abbr: Team abbreviation
+            team_abbr: Team abbreviation for which to calculate position
+            is_team_home: Whether the team is the home team
 
         Returns:
-            Field position (0-100) or None if not available
+            Field position (0-100) where 0 is own goal line, 100 is opponent's goal line.
+            Returns None if not available.
         """
         try:
             # ESPN provides yard line in situation
-            possession_abbr = situation.get('possession')
+            possession_text = situation.get('possessionText', '')
             yard_line = situation.get('yardLine')
 
-            if not yard_line:
+            if yard_line is None:
                 return None
 
-            # Parse yard line (e.g., 75 means team's own 25)
-            # ESPN uses 0-100 where 0 is team's own goal line
+            # Validate yard line is in expected range
+            if not (0 <= yard_line <= 100):
+                return None
+
+            # ESPN yardLine is typically the yard line number (1-50)
+            # We need to determine which side of the field and adjust for team perspective
+            # If possession text mentions the team's abbreviation in the first part,
+            # they're on their own side of the field
+
+            # Check if the team with possession is on their own side or opponent's side
+            # ESPN possessionText is like "PIT 25" (own 25) or "BAL 25" (opponent's 25)
+            if possession_text:
+                parts = possession_text.split()
+                if len(parts) >= 1:
+                    field_side = parts[0].upper()
+
+                    # Determine if this yard line is from team's perspective
+                    if field_side == team_abbr.upper():
+                        # Team is on their own side (0-49)
+                        return min(yard_line, 50)
+                    else:
+                        # Team is on opponent's side (51-100)
+                        return 100 - min(yard_line, 50)
+
+            # Fallback: if we can't parse possession text, use raw yard line
+            # Assume it's already in 0-100 format
             return yard_line
 
-        except (KeyError, ValueError):
+        except (KeyError, ValueError, TypeError):
             return None
 
 

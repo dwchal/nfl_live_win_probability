@@ -109,17 +109,18 @@ class LiveGameTracker:
         self,
         game: Dict[str, Any],
         team_abbr: str,
-        show_updates: bool = True
+        show_updates: bool = True,
+        show_full: bool = True
     ):
-        """Display a live game update with win probability."""
+        """Display a live game update with win probability and factor breakdown."""
         # Get game state for probability calculation
         state = self.api.get_game_state_for_probability(game, team_abbr)
 
         if not state:
             return
 
-        # Calculate win probability with enhanced factors
-        win_prob = self.calculator.calculate_win_probability(
+        # Calculate win probability with detailed explanation
+        result = self.calculator.calculate_win_probability_explained(
             score_diff=state['score_diff'],
             time_remaining=state['time_remaining'],
             has_possession=state['has_possession'],
@@ -131,6 +132,8 @@ class LiveGameTracker:
             team_win_pct=state.get('team_win_pct'),
             opponent_win_pct=state.get('opponent_win_pct')
         )
+
+        win_prob = result['probability']
 
         # Determine if we should show this update (state changed)
         game_key = f"{game['id']}_{state['period']}_{state['clock']}"
@@ -144,6 +147,10 @@ class LiveGameTracker:
             print(f"\n[{self._timestamp()}] Game Update:")
 
         self._display_game_summary(game, team_abbr, win_prob, state)
+
+        # Show factor breakdown if full display requested
+        if show_full:
+            self._display_factor_breakdown(result, state)
 
         # Show comeback probability if trailing
         if state['score_diff'] < 0:
@@ -160,6 +167,52 @@ class LiveGameTracker:
                 opponent_win_pct=state.get('opponent_win_pct')
             )
             print(f"  Comeback Probability: {comeback_prob:>6.1%}")
+
+    def _display_factor_breakdown(self, result: Dict[str, Any], state: Dict[str, Any]):
+        """Display detailed breakdown of factors affecting win probability."""
+        factors = result['factors']
+        z_total = result['z_total']
+
+        print(f"\n  ┌─────────────────────────────────────────────────────────┐")
+        print(f"  │  PREDICTION BREAKDOWN                                   │")
+        print(f"  ├─────────────────────────────────────────────────────────┤")
+
+        # Sort factors by absolute contribution for display
+        factor_items = [
+            ('Score', factors.get('score_diff', {})),
+            ('Time Remaining', factors.get('time_remaining', {})),
+            ('Possession', factors.get('possession', {})),
+            ('Field Position', factors.get('field_position', {})),
+            ('Down & Distance', factors.get('down_distance', {})),
+            ('Timeouts', factors.get('timeouts', {})),
+            ('Team Strength', factors.get('team_strength', {})),
+        ]
+
+        for name, factor in factor_items:
+            if not factor:
+                continue
+            contrib = factor.get('contribution', 0)
+            desc = factor.get('description', 'N/A')
+
+            # Format contribution with sign
+            if contrib > 0:
+                contrib_str = f"+{contrib:>5.2f}"
+                indicator = "▲"
+            elif contrib < 0:
+                contrib_str = f"{contrib:>6.2f}"
+                indicator = "▼"
+            else:
+                contrib_str = f"{contrib:>6.2f}"
+                indicator = " "
+
+            # Truncate description if too long
+            desc_truncated = desc[:25] if len(desc) > 25 else desc
+            print(f"  │  {indicator} {name:<15} {desc_truncated:<25} {contrib_str} │")
+
+        print(f"  ├─────────────────────────────────────────────────────────┤")
+        print(f"  │  Total Z-Score: {z_total:>6.2f}                                │")
+        print(f"  │  Win Probability: {result['probability']:>6.1%}                             │")
+        print(f"  └─────────────────────────────────────────────────────────┘")
 
     def _display_game_summary(
         self,
@@ -211,7 +264,7 @@ class LiveGameTracker:
             team_name: Team name or abbreviation
 
         Returns:
-            Dictionary with game info and win probability, or None if no game
+            Dictionary with game info, win probability, and factor breakdown, or None if no game
         """
         team_abbr = self.api._normalize_team_name(team_name)
         game = self.api.get_team_game(team_abbr)
@@ -223,7 +276,7 @@ class LiveGameTracker:
         if not state:
             return None
 
-        win_prob = self.calculator.calculate_win_probability(
+        result = self.calculator.calculate_win_probability_explained(
             score_diff=state['score_diff'],
             time_remaining=state['time_remaining'],
             has_possession=state['has_possession'],
@@ -239,7 +292,10 @@ class LiveGameTracker:
         return {
             'game': game,
             'state': state,
-            'win_probability': win_prob
+            'win_probability': result['probability'],
+            'factors': result['factors'],
+            'z_total': result['z_total'],
+            'explanation': result['explanation']
         }
 
     def _timestamp(self) -> str:
