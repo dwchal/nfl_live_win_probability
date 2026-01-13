@@ -20,29 +20,63 @@ class NFLWinProbability:
         self.possession_bonus = 0.3
         self.field_position_weight = 0.01
 
+        # Enhanced factors
+        self.timeout_weight = 0.15  # Value of each timeout
+        self.team_strength_weight = 0.8  # Impact of team quality difference
+
+        # Down and distance weights
+        self.down_distance_weights = {
+            1: 0.2,   # 1st down - good situation
+            2: 0.1,   # 2nd down - neutral
+            3: -0.1,  # 3rd down - pressure situation
+            4: -0.5,  # 4th down - critical situation
+        }
+        self.distance_weight = -0.02  # Penalty per yard to go
+
     def calculate_win_probability(
         self,
         score_diff: int,
         time_remaining: int,
         has_possession: bool = False,
-        field_position: Optional[int] = None
+        field_position: Optional[int] = None,
+        down: Optional[int] = None,
+        distance: Optional[int] = None,
+        team_timeouts: Optional[int] = None,
+        opponent_timeouts: Optional[int] = None,
+        team_win_pct: Optional[float] = None,
+        opponent_win_pct: Optional[float] = None
     ) -> float:
         """
-        Calculate win probability for the team with the lead.
+        Calculate win probability for the team with enhanced situational factors.
 
         Args:
             score_diff: Point differential (positive if team is leading)
             time_remaining: Seconds remaining in the game
             has_possession: Whether the team has possession
             field_position: Yard line (0-100, own 0 to opponent 0)
+            down: Current down (1-4), only relevant if has_possession=True
+            distance: Yards to go for first down, only relevant if has_possession=True
+            team_timeouts: Number of timeouts remaining for team (0-3)
+            opponent_timeouts: Number of timeouts remaining for opponent (0-3)
+            team_win_pct: Team's win percentage (0.0-1.0)
+            opponent_win_pct: Opponent's win percentage (0.0-1.0)
 
         Returns:
             Win probability as a float between 0 and 1
 
-        # TODO: Add support for down and distance
-        # TODO: Account for timeouts remaining
-        # TODO: Add overtime probability calculation
-        # TODO: Incorporate team strength ratings
+        Examples:
+            >>> calculator = NFLWinProbability()
+            >>> # Up by 3, 2 min left, 3rd & 7, 2 timeouts vs 0
+            >>> prob = calculator.calculate_win_probability(
+            ...     score_diff=3,
+            ...     time_remaining=120,
+            ...     has_possession=True,
+            ...     field_position=65,
+            ...     down=3,
+            ...     distance=7,
+            ...     team_timeouts=2,
+            ...     opponent_timeouts=0
+            ... )
         """
         # Calculate base probability from score and time
         z = (score_diff * self.score_weight) + (time_remaining * self.time_weight)
@@ -52,10 +86,38 @@ class NFLWinProbability:
             z += self.possession_bonus
 
         # Add field position factor
-        # TODO: Field position should have different weights in different game situations
         if field_position is not None:
             # Field position bonus (closer to opponent endzone = better)
             z += (field_position - 50) * self.field_position_weight
+
+        # Add down and distance factors
+        if has_possession and down is not None:
+            # Down situation impact
+            z += self.down_distance_weights.get(down, 0)
+
+            # Distance to go impact (longer distance = worse)
+            if distance is not None:
+                # Scale distance penalty: 3rd & 1 is much better than 3rd & 10
+                distance_penalty = distance * self.distance_weight
+                # Extra penalty for 3rd/4th down with long distance
+                if down >= 3 and distance >= 7:
+                    distance_penalty *= 1.5
+                z += distance_penalty
+
+        # Add timeout differential factor
+        if team_timeouts is not None and opponent_timeouts is not None:
+            timeout_diff = team_timeouts - opponent_timeouts
+            # Timeouts are more valuable late in the game
+            if time_remaining < 300:  # Last 5 minutes
+                timeout_value = self.timeout_weight * 1.5
+            else:
+                timeout_value = self.timeout_weight
+            z += timeout_diff * timeout_value
+
+        # Add team strength rating factor
+        if team_win_pct is not None and opponent_win_pct is not None:
+            strength_diff = team_win_pct - opponent_win_pct
+            z += strength_diff * self.team_strength_weight
 
         # Convert to probability using logistic function
         probability = self._logistic(z)
@@ -71,7 +133,13 @@ class NFLWinProbability:
         score_deficit: int,
         time_remaining: int,
         has_possession: bool = False,
-        field_position: Optional[int] = None
+        field_position: Optional[int] = None,
+        down: Optional[int] = None,
+        distance: Optional[int] = None,
+        team_timeouts: Optional[int] = None,
+        opponent_timeouts: Optional[int] = None,
+        team_win_pct: Optional[float] = None,
+        opponent_win_pct: Optional[float] = None
     ) -> float:
         """
         Calculate comeback probability for a team that is currently losing.
@@ -84,6 +152,12 @@ class NFLWinProbability:
             time_remaining: Seconds remaining in the game
             has_possession: Whether the trailing team has possession
             field_position: Yard line from trailing team's perspective (0-100)
+            down: Current down (1-4), only relevant if has_possession=True
+            distance: Yards to go for first down
+            team_timeouts: Number of timeouts remaining for trailing team (0-3)
+            opponent_timeouts: Number of timeouts remaining for leading team (0-3)
+            team_win_pct: Trailing team's win percentage (0.0-1.0)
+            opponent_win_pct: Leading team's win percentage (0.0-1.0)
 
         Returns:
             Comeback probability as a float between 0 and 1
@@ -95,7 +169,11 @@ class NFLWinProbability:
             ...     score_deficit=7,
             ...     time_remaining=300,
             ...     has_possession=True,
-            ...     field_position=25
+            ...     field_position=25,
+            ...     down=1,
+            ...     distance=10,
+            ...     team_timeouts=3,
+            ...     opponent_timeouts=2
             ... )
         """
         if score_deficit < 0:
@@ -110,7 +188,13 @@ class NFLWinProbability:
             score_diff=trailing_score_diff,
             time_remaining=time_remaining,
             has_possession=has_possession,
-            field_position=field_position
+            field_position=field_position,
+            down=down,
+            distance=distance,
+            team_timeouts=team_timeouts,
+            opponent_timeouts=opponent_timeouts,
+            team_win_pct=team_win_pct,
+            opponent_win_pct=opponent_win_pct
         )
 
         return comeback_prob
@@ -165,6 +249,106 @@ def main():
         )
         print(f"\n{scenario['desc']}")
         print(f"Comeback Probability: {comeback_prob:.1%}")
+
+    # Demonstrate enhanced features: down & distance, timeouts, team strength
+    print("\n\n" + "=" * 60)
+    print("Enhanced Features Examples")
+    print("=" * 60)
+
+    print("\n1. DOWN & DISTANCE IMPACT")
+    print("-" * 60)
+    # Same situation but different downs
+    base_scenario = {
+        "score_diff": 3,
+        "time_remaining": 120,
+        "has_possession": True,
+        "field_position": 65
+    }
+
+    for down, distance, desc in [(1, 10, "1st & 10"), (2, 7, "2nd & 7"), (3, 3, "3rd & 3"), (3, 12, "3rd & 12"), (4, 1, "4th & 1")]:
+        prob = calculator.calculate_win_probability(
+            **base_scenario,
+            down=down,
+            distance=distance
+        )
+        print(f"{desc}: {prob:.1%}")
+
+    print("\n2. TIMEOUT ADVANTAGE")
+    print("-" * 60)
+    # Show impact of timeout differential
+    timeout_scenario = {
+        "score_diff": 3,
+        "time_remaining": 180,
+        "has_possession": False,
+        "field_position": None
+    }
+
+    for team_to, opp_to in [(3, 3), (3, 1), (3, 0), (0, 3)]:
+        prob = calculator.calculate_win_probability(
+            **timeout_scenario,
+            team_timeouts=team_to,
+            opponent_timeouts=opp_to
+        )
+        print(f"Timeouts {team_to} vs {opp_to}: {prob:.1%}")
+
+    print("\n3. TEAM STRENGTH RATINGS")
+    print("-" * 60)
+    # Show impact of team quality
+    strength_scenario = {
+        "score_diff": 0,
+        "time_remaining": 300,
+        "has_possession": True,
+        "field_position": 50
+    }
+
+    for team_pct, opp_pct, desc in [(0.750, 0.500, "Strong vs Average"), (0.500, 0.500, "Equal Teams"), (0.300, 0.700, "Weak vs Strong")]:
+        prob = calculator.calculate_win_probability(
+            **strength_scenario,
+            team_win_pct=team_pct,
+            opponent_win_pct=opp_pct
+        )
+        print(f"{desc} ({team_pct:.1%} vs {opp_pct:.1%}): {prob:.1%}")
+
+    print("\n4. COMBINED FACTORS")
+    print("-" * 60)
+    # Realistic late-game scenarios with all factors
+    combined_scenarios = [
+        {
+            "desc": "Steelers (10-3) up 3, 3rd & 2, own 40, 2 min, 2 TOs vs 1",
+            "params": {
+                "score_diff": 3,
+                "time_remaining": 120,
+                "has_possession": True,
+                "field_position": 40,
+                "down": 3,
+                "distance": 2,
+                "team_timeouts": 2,
+                "opponent_timeouts": 1,
+                "team_win_pct": 0.769,  # 10-3
+                "opponent_win_pct": 0.538   # 7-6
+            }
+        },
+        {
+            "desc": "Browns (5-8) down 7, 1st & 10, opp 35, 5 min, 3 TOs vs 2",
+            "params": {
+                "score_diff": -7,
+                "time_remaining": 300,
+                "has_possession": True,
+                "field_position": 65,
+                "down": 1,
+                "distance": 10,
+                "team_timeouts": 3,
+                "opponent_timeouts": 2,
+                "team_win_pct": 0.385,  # 5-8
+                "opponent_win_pct": 0.615   # 8-5
+            }
+        }
+    ]
+
+    for scenario in combined_scenarios:
+        prob = calculator.calculate_win_probability(**scenario["params"])
+        print(f"\n{scenario['desc']}")
+        print(f"Win Probability: {prob:.1%}")
 
 
 if __name__ == "__main__":

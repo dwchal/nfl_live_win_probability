@@ -118,12 +118,18 @@ class LiveGameTracker:
         if not state:
             return
 
-        # Calculate win probability
+        # Calculate win probability with enhanced factors
         win_prob = self.calculator.calculate_win_probability(
             score_diff=state['score_diff'],
             time_remaining=state['time_remaining'],
             has_possession=state['has_possession'],
-            field_position=state['field_position']
+            field_position=state['field_position'],
+            down=state.get('down'),
+            distance=state.get('distance'),
+            team_timeouts=state.get('team_timeouts'),
+            opponent_timeouts=state.get('opponent_timeouts'),
+            team_win_pct=state.get('team_win_pct'),
+            opponent_win_pct=state.get('opponent_win_pct')
         )
 
         # Determine if we should show this update (state changed)
@@ -145,7 +151,13 @@ class LiveGameTracker:
                 score_deficit=abs(state['score_diff']),
                 time_remaining=state['time_remaining'],
                 has_possession=state['has_possession'],
-                field_position=state['field_position']
+                field_position=state['field_position'],
+                down=state.get('down'),
+                distance=state.get('distance'),
+                team_timeouts=state.get('team_timeouts'),
+                opponent_timeouts=state.get('opponent_timeouts'),
+                team_win_pct=state.get('team_win_pct'),
+                opponent_win_pct=state.get('opponent_win_pct')
             )
             print(f"  Comeback Probability: {comeback_prob:>6.1%}")
 
@@ -161,9 +173,19 @@ class LiveGameTracker:
         team = game['home_team'] if is_home else game['away_team']
         opponent = game['away_team'] if is_home else game['home_team']
 
-        print(f"\n  {game['away_team']['abbr']:>4} {game['away_team']['score']:>3}  @  "
-              f"{game['home_team']['abbr']:>4} {game['home_team']['score']:>3}")
+        # Display team records if available
+        away_record = game['away_team'].get('record', '')
+        home_record = game['home_team'].get('record', '')
+
+        print(f"\n  {game['away_team']['abbr']:>4} ({away_record}) {game['away_team']['score']:>3}  @  "
+              f"{game['home_team']['abbr']:>4} ({home_record}) {game['home_team']['score']:>3}")
         print(f"  Period: {game['period']}, Clock: {game['clock']}")
+
+        # Display timeouts if available
+        away_timeouts = game['away_team'].get('timeouts')
+        home_timeouts = game['home_team'].get('timeouts')
+        if away_timeouts is not None and home_timeouts is not None:
+            print(f"  Timeouts: {game['away_team']['abbr']} {away_timeouts}, {game['home_team']['abbr']} {home_timeouts}")
 
         if game.get('possession_text'):
             print(f"  Possession: {game['possession_text']}")
@@ -205,7 +227,13 @@ class LiveGameTracker:
             score_diff=state['score_diff'],
             time_remaining=state['time_remaining'],
             has_possession=state['has_possession'],
-            field_position=state['field_position']
+            field_position=state['field_position'],
+            down=state.get('down'),
+            distance=state.get('distance'),
+            team_timeouts=state.get('team_timeouts'),
+            opponent_timeouts=state.get('opponent_timeouts'),
+            team_win_pct=state.get('team_win_pct'),
+            opponent_win_pct=state.get('opponent_win_pct')
         )
 
         return {

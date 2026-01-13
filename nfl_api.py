@@ -93,6 +93,33 @@ class NFLGameAPI:
         # Look up in mappings
         return self.TEAM_MAPPINGS.get(team_lower, team_name.upper())
 
+    def _parse_win_percentage(self, record: str) -> float:
+        """
+        Parse win percentage from record string.
+
+        Args:
+            record: Record string like "10-3" or "5-8-1"
+
+        Returns:
+            Win percentage as float (0.0-1.0)
+        """
+        try:
+            parts = record.split('-')
+            wins = int(parts[0])
+            losses = int(parts[1])
+            ties = int(parts[2]) if len(parts) > 2 else 0
+
+            total_games = wins + losses + ties
+            if total_games == 0:
+                return 0.5  # Default to 50% if no games played
+
+            # Ties count as 0.5 wins
+            win_pct = (wins + 0.5 * ties) / total_games
+            return win_pct
+
+        except (ValueError, IndexError):
+            return 0.5  # Default to 50% if parsing fails
+
     def _parse_game(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Parse game data from ESPN API response.
@@ -130,6 +157,18 @@ class NFLGameAPI:
             possession_text = situation.get('possessionText', '')
             down_distance = situation.get('shortDownDistanceText', '')
 
+            # Extract team records (wins-losses)
+            home_record = home_team.get('records', [{}])[0].get('summary', '0-0')
+            away_record = away_team.get('records', [{}])[0].get('summary', '0-0')
+
+            # Parse timeouts remaining
+            home_timeouts = situation.get('homeTimeouts', 3)
+            away_timeouts = situation.get('awayTimeouts', 3)
+
+            # Parse down and distance from situation
+            down = situation.get('down')
+            distance = situation.get('distance')
+
             game_info = {
                 'id': event['id'],
                 'state': state,
@@ -138,18 +177,24 @@ class NFLGameAPI:
                     'name': home_team['team']['displayName'],
                     'abbr': home_team['team']['abbreviation'],
                     'score': int(home_team['score']),
-                    'has_possession': home_has_possession
+                    'has_possession': home_has_possession,
+                    'record': home_record,
+                    'timeouts': home_timeouts
                 },
                 'away_team': {
                     'name': away_team['team']['displayName'],
                     'abbr': away_team['team']['abbreviation'],
                     'score': int(away_team['score']),
-                    'has_possession': away_has_possession
+                    'has_possession': away_has_possession,
+                    'record': away_record,
+                    'timeouts': away_timeouts
                 },
                 'period': period,
                 'clock': clock,
                 'possession_text': possession_text,
                 'down_distance': down_distance,
+                'down': down,
+                'distance': distance,
                 'situation': situation
             }
 
@@ -193,13 +238,33 @@ class NFLGameAPI:
         # Try to parse field position from situation
         field_position = self._parse_field_position(game['situation'], team_abbr)
 
+        # Get down and distance (only meaningful if team has possession)
+        down = game.get('down') if has_possession else None
+        distance = game.get('distance') if has_possession else None
+
+        # Get timeouts
+        team_timeouts = team.get('timeouts', 3)
+        opponent_timeouts = opponent.get('timeouts', 3)
+
+        # Parse team records to win percentages
+        team_win_pct = self._parse_win_percentage(team.get('record', '0-0'))
+        opponent_win_pct = self._parse_win_percentage(opponent.get('record', '0-0'))
+
         return {
             'score_diff': score_diff,
             'time_remaining': time_remaining,
             'has_possession': has_possession,
             'field_position': field_position,
+            'down': down,
+            'distance': distance,
+            'team_timeouts': team_timeouts,
+            'opponent_timeouts': opponent_timeouts,
+            'team_win_pct': team_win_pct,
+            'opponent_win_pct': opponent_win_pct,
             'team_name': team['name'],
+            'team_record': team.get('record', '0-0'),
             'opponent_name': opponent['name'],
+            'opponent_record': opponent.get('record', '0-0'),
             'period': game['period'],
             'clock': game['clock']
         }
